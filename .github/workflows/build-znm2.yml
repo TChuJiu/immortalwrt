@@ -1,0 +1,137 @@
+name: Build ZN-M2 Firmware
+
+on:
+  workflow_dispatch:
+    inputs:
+      usb_enabled:
+        description: 'Enable USB 3.0 support'
+        required: false
+        default: 'true'
+        type: boolean
+
+env:
+  GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
+  TZ: Asia/Shanghai
+
+jobs:
+  build-znm2:
+    name: "Build ZN-M2 (IPQ6000 + 1GB RAM + USB)"
+    runs-on: ubuntu-22.04
+    timeout-minutes: 600
+
+    steps:
+      - name: Prepare environment
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            ack antlr3 asciidoc autoconf automake autopoint binutils bison \
+            build-essential bzip2 ccache cmake cpio curl device-tree-compiler \
+            fastjar flex gawk gettext gcc-multilib g++-multilib git gperf \
+            haveged help2man intltool libc6-dev-i386 libelf-dev \
+            libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev \
+            libncurses5-dev libncursesw5-dev libreadline-dev libfuse-dev \
+            libssl-dev libtool lrzsz genisoimage msmtp nano ninja-build \
+            p7zip p7zip-full patch pkgconf python3 python3-pip libpython3-dev \
+            qemu-utils rsync scons squashfs-tools subversion swig texinfo \
+            uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev \
+            libmpc-dev u-boot-tools mtools parted dosfstools uuid-runtime \
+            screen bc binutils-aarch64-linux-gnu gdisk libpcre3-dev libarchive-tools
+
+      - name: Clone ImmortalWrt source
+        uses: actions/checkout@v4
+        with:
+          repository: TChuJiu/immortalwrt
+          ref: ${{ github.ref_name }}
+          fetch-depth: 1
+          token: ${{ secrets.GH_TOKEN }}
+
+      - name: Configure Git
+        run: |
+          git config --global user.email "actions@github.com"
+          git config --global user.name "GitHub Actions"
+
+      - name: Generate .config for ZN-M2
+        run: |
+          echo "Building config tools..."
+          make tools/config CONFIG_TARGET_ROOTFS_PARTSIZE=0 -j$(nproc) 2>/dev/null || true
+          make scripts/config/conf
+          
+          # Use qualcommax/ipq60xx config as base
+          scripts/config/conf --defconfig=target/linux/qualcommax/ipq60xx/config-default Config.in -O .config
+          
+          # Force set target and device
+          sed -i -e '/CONFIG_TARGET_qualcommax/d' -e '/CONFIG_TARGET_DEVICE/d' \
+              -e '/CONFIG_CPU_/d' -e '/CONFIG_ARM64_VA_BITS/d' .config
+          
+          printf '%s\n' \
+            'CONFIG_TARGET_qualcommax=y' \
+            'CONFIG_TARGET_qualcommax_ipq60xx=y' \
+            'CONFIG_TARGET_DEVICE_qualcommax_ipq60xx_DEVICE_zn_m2=y' \
+            'CONFIG_CPU_CORTEX_A7=y' \
+            'CONFIG_ARCH_64BIT=y' \
+            >> .config
+          
+          # Fix cortex-a53 -> cortex-a7
+          sed -i 's/cortex-a53/cortex-a7/g' .config
+          
+          # USB support
+          printf '%s\n' \
+            'CONFIG_PACKAGE_kmod-usb3=y' \
+            'CONFIG_PACKAGE_kmod-usb-storage=y' \
+            'CONFIG_PACKAGE_kmod-fs-ext4=y' \
+            'CONFIG_PACKAGE_block-mount=y' \
+            'CONFIG_PACKAGE_e2fsprogs=y' \
+            'CONFIG_PACKAGE_fdisk=y' \
+            'CONFIG_PACKAGE_mkfs_ext4=y' \
+            'CONFIG_PACKAGE_kmod-nls-base=y' \
+            'CONFIG_PACKAGE_luci=y' \
+            'CONFIG_PACKAGE_luci-app-firewall=y' \
+            >> .config
+          
+          scripts/config/conf --olddefconfig Config.in
+          
+          TARGET_LINE=$(grep '^CONFIG_TARGET_qualcommax_ipq60xx=' .config)
+          if [ -z "$TARGET_LINE" ]; then
+            echo "ERROR: Target not set!"
+            exit 1
+          fi
+          echo "Target verified: $TARGET_LINE"
+          echo "Config ready: $(wc -l < .config) lines"
+
+      - name: Download dependencies
+        run: |
+          echo "Downloading packages..."
+          make download -j$(nproc) || make download -j1
+          echo "Download complete"
+
+      - name: Build ZN-M2 firmware
+        run: |
+          echo "Building ZN-M2 firmware at $(date)"
+          make -j$(nproc) BUILD_LOG=1 || make -j1 BUILD_LOG=1
+          echo "Build complete: $(date)"
+
+      - name: Find firmware
+        run: |
+          echo "=== ZN-M2 Firmware ==="
+          find bin/targets -type f \( -name "*zn_m2*" -o -name "*sysupgrade*" -o -name "*.bin" \) -exec ls -lh {} \; 2>/dev/null | awk '{print $5, $9}'
+          echo "=== Target dir ==="
+          ls -la bin/targets/qualcommax/ipq60xx/ 2>/dev/null || echo "No output dir"
+
+      - name: Upload firmware artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-znm2-${{ github.run_number }}
+          path: |
+            bin/targets/**/zn_m2*.bin
+            bin/targets/**/sysupgrade*.bin
+          retention-days: 14
+          compression-level: 9
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-znm2-${{ github.run_number }}
+          path: logs/
+          retention-days: 30
