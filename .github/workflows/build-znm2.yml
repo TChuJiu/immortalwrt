@@ -10,7 +10,6 @@ on:
         type: boolean
 
 env:
-  GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
   TZ: Asia/Shanghai
 
 jobs:
@@ -43,7 +42,6 @@ jobs:
           repository: TChuJiu/immortalwrt
           ref: ${{ github.ref_name }}
           fetch-depth: 1
-          token: ${{ secrets.GH_TOKEN }}
 
       - name: Configure Git
         run: |
