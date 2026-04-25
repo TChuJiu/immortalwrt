@@ -1,6 +1,8 @@
 name: Build ZN-M2 Firmware
 
 on:
+  repository_dispatch:
+    types: [build-request]
   workflow_dispatch:
     inputs:
       usb_enabled:
@@ -57,33 +59,16 @@ jobs:
           # Use qualcommax/ipq60xx config as base
           scripts/config/conf --defconfig=target/linux/qualcommax/ipq60xx/config-default Config.in -O .config
           
-          # Force set target and device
+          # Force set target and device (remove conflicting lines)
           sed -i -e '/CONFIG_TARGET_qualcommax/d' -e '/CONFIG_TARGET_DEVICE/d' \
-              -e '/CONFIG_CPU_/d' -e '/CONFIG_ARM64_VA_BITS/d' .config
+              -e '/CONFIG_CPU_/d' -e '/CONFIG_ARM64_VA_BITS/d' \
+              -e '/CONFIG_TARGET_MULTI_PROFILE/d' .config
           
           printf '%s\n' \
             'CONFIG_TARGET_qualcommax=y' \
             'CONFIG_TARGET_qualcommax_ipq60xx=y' \
             'CONFIG_TARGET_DEVICE_qualcommax_ipq60xx_DEVICE_zn_m2=y' \
-            'CONFIG_CPU_CORTEX_A7=y' \
-            'CONFIG_ARCH_64BIT=y' \
-            >> .config
-          
-          # Fix cortex-a53 -> cortex-a7
-          sed -i 's/cortex-a53/cortex-a7/g' .config
-          
-          # USB support
-          printf '%s\n' \
-            'CONFIG_PACKAGE_kmod-usb3=y' \
-            'CONFIG_PACKAGE_kmod-usb-storage=y' \
-            'CONFIG_PACKAGE_kmod-fs-ext4=y' \
-            'CONFIG_PACKAGE_block-mount=y' \
-            'CONFIG_PACKAGE_e2fsprogs=y' \
-            'CONFIG_PACKAGE_fdisk=y' \
-            'CONFIG_PACKAGE_mkfs_ext4=y' \
-            'CONFIG_PACKAGE_kmod-nls-base=y' \
-            'CONFIG_PACKAGE_luci=y' \
-            'CONFIG_PACKAGE_luci-app-firewall=y' \
+            'CONFIG_TARGET_MULTI_PROFILE=n' \
             >> .config
           
           scripts/config/conf --olddefconfig Config.in
@@ -94,6 +79,7 @@ jobs:
             exit 1
           fi
           echo "Target verified: $TARGET_LINE"
+          echo "MULTI_PROFILE=$(grep CONFIG_TARGET_MULTI_PROFILE .config)"
           echo "Config ready: $(wc -l < .config) lines"
 
       - name: Download dependencies
@@ -104,12 +90,16 @@ jobs:
 
       - name: Build ZN-M2 firmware
         run: |
+          echo "=== Disk space before build ==="
+          df -h /home/runner /tmp || true
           echo "Building ZN-M2 firmware at $(date)"
           make -j$(nproc) BUILD_LOG=1 || make -j1 BUILD_LOG=1
           echo "Build complete: $(date)"
 
       - name: Find firmware
         run: |
+          echo "=== Disk space after build ==="
+          df -h /home/runner /tmp || true
           echo "=== ZN-M2 Firmware ==="
           find bin/targets -type f \( -name "*zn_m2*" -o -name "*sysupgrade*" -o -name "*.bin" \) -exec ls -lh {} \; 2>/dev/null | awk '{print $5, $9}'
           echo "=== Target dir ==="
